@@ -10,11 +10,11 @@ import "core:strings"
 CHUNK := [4096]u8{}
 
 Options :: struct {
-	many:      string `args:"name=m"`,
-	single:    string `args:"name=s"`,
-	explorers: int `args:"name=e"`,
-	writers:   int `args:"name=w"`,
-	times:     int `args:"name=t"`,
+	many:      string `args:"name=m" usage:"file containing paths to process"`,
+	single:    string `args:"name=s" usage:"single file or directory to process"`,
+	explorers: int `args:"name=e" usage:"number of directory workers"`,
+	writers:   int `args:"name=w" usage:"number of file workers"`,
+	times:     int `args:"name=t" usage:"number of times to overwrite each file"`,
 }
 
 State :: struct {
