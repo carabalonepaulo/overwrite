@@ -1,5 +1,7 @@
+async := "-collection:async=./async/async"
+
 build:
-    @-odin build . -collection:"async=./async"
+    @-odin build . {{async}} -o:aggressive -show-timings
 
 run:
-    @-odin run . -collection:"async=./async"
+    @-odin run . {{async}}

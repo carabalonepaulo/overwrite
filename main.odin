@@ -1,87 +1,185 @@
 package overwrite
 
+import "async:."
+import "async:io"
 import "core:flags"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 
-TIMES :: 3
 CHUNK := [4096]u8{}
 
 Options :: struct {
-	m: ^os.File `args:"file=r" usage:"File where each line is the path to another file."`,
-	s: ^os.File `args:"file=w" usage:"File to be overwritten."`,
+	many:      string `args:"name=m"`,
+	single:    string `args:"name=s"`,
+	explorers: int `args:"name=e"`,
+	writers:   int `args:"name=w"`,
+	times:     int `args:"name=t"`,
+}
+
+State :: struct {
+	path_ch:   async.Chan(string),
+	dir_ch:    async.Chan(string),
+	file_ch:   async.Chan(io.Handle),
+	//
+	explorers: int,
+	writers:   int,
+	times:     int,
+	//
+	wg:        async.Wait_Group,
 }
 
 main :: proc() {
-	opts: Options
+	opts := Options {
+		explorers = 1,
+		writers   = 5,
+		times     = 3,
+	}
 	flags.parse_or_exit(&opts, os.args, .Odin)
 
-	if opts.m != nil {
-		if !many(opts.m) {
-			fmt.println("failed to open input file")
+	async.init()
+	defer async.deinit()
+
+	io.init()
+	defer io.deinit()
+
+	state := State {
+		path_ch   = async.create_chan(string),
+		dir_ch    = async.create_chan(string),
+		file_ch   = async.create_chan(io.Handle),
+		explorers = opts.explorers,
+		writers   = opts.writers,
+		times     = opts.times,
+		wg        = async.create_wait_group(),
+	}
+
+	if len(opts.single) > 0 {
+		async.add(state.wg)
+		async.send(state.path_ch, strings.clone(opts.single))
+	} else if len(opts.many) > 0 {
+		buf, err := os.read_entire_file(opts.many, context.allocator)
+		if err != nil {
+			fmt.println("failed to read file list")
+			return
 		}
-	} else if opts.s != nil {
-		if !single(opts.s) {
-			fmt.println("failed to overwrite file")
+
+		text := transmute(string)(buf)
+		for line in strings.split_lines_iterator(&text) {
+			if len(line) == 0 do continue
+			async.add(state.wg)
+			async.send(state.path_ch, strings.clone(line))
+		}
+	}
+
+	handle := async.spawn(&state, submain)
+	async.block(handle, io.poll)
+}
+
+submain :: proc(state: ^State) {
+	fmt.println("[submain] init")
+	defer fmt.println("[submain] deinit")
+
+	handles := make([dynamic]async.Handle)
+	defer delete(handles)
+
+	append(&handles, async.spawn(state, broker))
+	for _ in 0 ..< state.explorers do append(&handles, async.spawn(state, explorer))
+	for _ in 0 ..< state.writers do append(&handles, async.spawn(state, writer))
+
+	async.wait(state.wg)
+	async.destroy(state.path_ch)
+	async.destroy(state.dir_ch)
+	async.destroy(state.file_ch)
+	async.destroy(state.wg)
+
+	async.join_many(handles[:])
+}
+
+broker :: proc(state: ^State) {
+	fmt.println("[broker] init")
+	defer fmt.println("[broker] deinit")
+
+	for path in async.recv(state.path_ch) {
+		defer async.done(state.wg)
+
+		fmt.printfln("[broker] < %v", path)
+		file := io.open(path, {.Write}) or_continue
+
+		type, size, stat_err := io.stat(file)
+		if stat_err != nil {
+			io.close(file)
+			continue
+		}
+
+		#partial switch type {
+		case .Regular:
+			delete(path)
+			async.add(state.wg)
+			async.send(state.file_ch, file)
+		case .Directory:
+			io.close(file)
+			async.add(state.wg)
+			async.send(state.dir_ch, path)
+		case:
+			delete(path)
+			io.close(file)
 		}
 	}
 }
 
-single :: proc(file: ^os.File) -> (ok: bool) {
-	size := file_size(file) or_return
-	for i in 0 ..< TIMES do overwrite(file, size) or_return
-	return true
-}
+explorer :: proc(state: ^State) {
+	fmt.println("[explorer] init")
+	defer fmt.println("[explorer] deinit")
 
-many :: proc(input_file: ^os.File) -> bool {
-	buf, err := os.read_entire_file(input_file, context.allocator)
-	if err != nil do return false
-	defer delete(buf)
+	for dir_path in async.recv(state.dir_ch) {
+		defer async.done(state.wg)
 
-	text := transmute(string)(buf)
-	for line in strings.split_lines_iterator(&text) {
-		if len(line) == 0 do continue
-		if file, size, ok := info(line); ok {
-			for i in 0 ..< TIMES do overwrite(file, size) or_break
-		} else do fmt.printfln("failed to open %v", line)
+		fmt.printfln("[explorer] < %v", dir_path)
+		defer delete(dir_path)
+
+		file := os.open(dir_path, {.Read}) or_continue
+		it := os.read_directory_iterator_create(file)
+		defer os.read_directory_iterator_destroy(&it)
+
+		for info in os.read_directory_iterator(&it) {
+			_ = os.read_directory_iterator_error(&it) or_continue
+
+			#partial switch info.type {
+			case .Regular:
+				async.add(state.wg)
+				async.send(state.path_ch, strings.clone(info.fullpath))
+			case .Directory:
+				async.add(state.wg)
+				async.send(state.dir_ch, strings.clone(info.fullpath))
+			}
+
+			async.reschedule()
+		}
 	}
-
-	return true
 }
 
-file_size :: proc(file: ^os.File) -> (size: int, ok: bool) {
-	file_info, err := os.fstat(file, context.allocator)
-	if err != nil do return 0, false
-	os.file_info_delete(file_info, context.allocator)
-	return int(file_info.size), true
+writer :: proc(state: ^State) {
+	fmt.println("[writer] init")
+	defer fmt.println("[writer] deinit")
+
+	for file in async.recv(state.file_ch) {
+		defer async.done(state.wg)
+
+		fmt.println("[writer] <")
+		defer io.close(file)
+		_, size := io.stat(file) or_continue
+		for i in 0 ..< state.times do overwrite(file, int(size)) or_break
+	}
 }
 
-open :: proc(file_path: string) -> (^os.File, bool) {
-	file, err := os.open(file_path, {.Write})
-	if err != nil do return nil, false
-	return file, true
-}
-
-info :: proc(file_path: string) -> (file: ^os.File, size: int, ok: bool) {
-	file = open(file_path) or_return
-	size = file_size(file) or_return
-	return file, size, true
-}
-
-overwrite :: proc(file: ^os.File, size: int) -> bool {
-	os.seek(file, 0, .Start)
-
+overwrite :: proc(file: io.Handle, size: int) -> bool {
 	chunk := CHUNK[:]
 	written := 0
 
 	for written < size {
 		remaining := size - written
 		chunk_len := min(len(chunk), remaining)
-
-		n, err := os.write(file, chunk[:chunk_len])
-		if err != nil do break
-
+		n := io.write(file, written, chunk[:chunk_len]) or_break
 		written += n
 	}
 
