@@ -62,6 +62,7 @@ main :: proc() {
 			fmt.println("failed to read file list")
 			return
 		}
+		defer delete(buf)
 
 		text := transmute(string)(buf)
 		for line in strings.split_lines_iterator(&text) {
