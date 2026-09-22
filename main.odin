@@ -152,15 +152,11 @@ explorer :: proc(state: ^State) {
 		}
 
 		fmt.printfln("[explorer] < %v", dir_path)
-		file := os.open(dir_path, {.Read}) or_continue
-		defer os.close(file)
+		it := io.create_read_dir(dir_path) or_continue
+		defer io.destroy_read_dir(&it)
 
-		it := os.read_directory_iterator_create(file)
-		defer os.read_directory_iterator_destroy(&it)
-
-		for info in os.read_directory_iterator(&it) {
-			_ = os.read_directory_iterator_error(&it) or_continue
-
+		for info in io.read_dir(&it) {
+			io.read_dir_error(&it) or_continue
 			#partial switch info.type {
 			case .Regular:
 				async.add(state.wg)
@@ -169,8 +165,6 @@ explorer :: proc(state: ^State) {
 				async.add(state.wg)
 				async.send(state.dir_ch, strings.clone(info.fullpath))
 			}
-
-			async.reschedule()
 		}
 	}
 }
