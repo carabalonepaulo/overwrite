@@ -15,18 +15,25 @@ Options :: struct {
 	explorers: int `args:"name=e" usage:"number of directory workers"`,
 	writers:   int `args:"name=w" usage:"number of file workers"`,
 	times:     int `args:"name=t" usage:"number of times to overwrite each file"`,
+	delete:    bool `args:"name=d" usage:"delete file/dir"`,
+}
+
+File :: struct {
+	path:   string,
+	handle: io.Handle,
 }
 
 State :: struct {
-	path_ch:   async.Chan(string),
-	dir_ch:    async.Chan(string),
-	file_ch:   async.Chan(io.Handle),
+	path_ch:      async.Chan(string),
+	dir_ch:       async.Chan(string),
+	file_ch:      async.Chan(File),
+	delete_paths: [dynamic]string,
 	//
-	explorers: int,
-	writers:   int,
-	times:     int,
+	explorers:    int,
+	writers:      int,
+	times:        int,
 	//
-	wg:        async.Wait_Group,
+	wg:           async.Wait_Group,
 }
 
 main :: proc() {
@@ -46,12 +53,14 @@ main :: proc() {
 	state := State {
 		path_ch   = async.create_chan(string),
 		dir_ch    = async.create_chan(string),
-		file_ch   = async.create_chan(io.Handle),
+		file_ch   = async.create_chan(File),
 		explorers = opts.explorers,
 		writers   = opts.writers,
 		times     = opts.times,
 		wg        = async.create_wait_group(),
 	}
+
+	if opts.delete do state.delete_paths = make([dynamic]string, 0, 32)
 
 	if len(opts.single) > 0 {
 		async.add(state.wg)
@@ -93,6 +102,11 @@ submain :: proc(state: ^State) {
 	async.destroy(state.file_ch)
 	async.destroy(state.wg)
 
+	if state.delete_paths != nil {
+		async.join(async.spawn(state, janitor))
+		delete(state.delete_paths)
+	}
+
 	async.join_many(handles[:])
 }
 
@@ -106,7 +120,7 @@ broker :: proc(state: ^State) {
 		fmt.printfln("[broker] < %v", path)
 		file := io.open(path, {.Write}) or_continue
 
-		type, size, stat_err := io.stat(file)
+		type, _, stat_err := io.stat(file)
 		if stat_err != nil {
 			io.close(file)
 			continue
@@ -114,9 +128,8 @@ broker :: proc(state: ^State) {
 
 		#partial switch type {
 		case .Regular:
-			delete(path)
 			async.add(state.wg)
-			async.send(state.file_ch, file)
+			async.send(state.file_ch, File{path, file})
 		case .Directory:
 			io.close(file)
 			async.add(state.wg)
@@ -133,12 +146,15 @@ explorer :: proc(state: ^State) {
 	defer fmt.println("[explorer] deinit")
 
 	for dir_path in async.recv(state.dir_ch) {
-		defer async.done(state.wg)
+		defer {
+			async.done(state.wg)
+			queue_delete(state, dir_path)
+		}
 
 		fmt.printfln("[explorer] < %v", dir_path)
-		defer delete(dir_path)
-
 		file := os.open(dir_path, {.Read}) or_continue
+		defer os.close(file)
+
 		it := os.read_directory_iterator_create(file)
 		defer os.read_directory_iterator_destroy(&it)
 
@@ -164,12 +180,15 @@ writer :: proc(state: ^State) {
 	defer fmt.println("[writer] deinit")
 
 	for file in async.recv(state.file_ch) {
-		defer async.done(state.wg)
+		defer {
+			async.done(state.wg)
+			io.close(file.handle)
+			queue_delete(state, file.path)
+		}
 
 		fmt.println("[writer] <")
-		defer io.close(file)
-		_, size := io.stat(file) or_continue
-		for i in 0 ..< state.times do overwrite(file, int(size)) or_break
+		_, size := io.stat(file.handle) or_continue
+		for i in 0 ..< state.times do overwrite(file.handle, int(size)) or_break
 	}
 }
 
@@ -185,5 +204,22 @@ overwrite :: proc(file: io.Handle, size: int) -> bool {
 	}
 
 	return true
+}
+
+janitor :: proc(state: ^State) {
+	fmt.println("[janitor] init")
+	defer fmt.println("[janitor] deinit")
+
+	for path in state.delete_paths {
+		fmt.printfln("[janitor] < %v", path)
+		_ = os.remove_all(path)
+		delete(path)
+	}
+}
+
+@(private = "file")
+queue_delete :: proc(state: ^State, path: string) {
+	if state.delete_paths != nil do append(&state.delete_paths, path)
+	else do delete(path)
 }
 
