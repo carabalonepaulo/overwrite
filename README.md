@@ -6,8 +6,9 @@ A tool to overwrite files.
 
 ```
 Usage:
-	overwrite.exe [-e] [-m] [-s] [-t] [-w]
+	overwrite.exe [-d] [-e] [-m] [-s] [-t] [-w]
 Flags:
+	-d           | delete file/dir
 	-e:<int>     | number of directory workers
 	-m:<string>  | file containing paths to process
 	-s:<string>  | single file or directory to process

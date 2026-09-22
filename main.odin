@@ -15,7 +15,7 @@ Options :: struct {
 	explorers: int `args:"name=e" usage:"number of directory workers"`,
 	writers:   int `args:"name=w" usage:"number of file workers"`,
 	times:     int `args:"name=t" usage:"number of times to overwrite each file"`,
-	delete:    bool `args:"name=d" usage:"delete file/dir"`,
+	delete:    bool `args:"name=d" usage:"delete files/dirs"`,
 }
 
 File :: struct {
