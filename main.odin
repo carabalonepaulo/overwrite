@@ -16,6 +16,7 @@ Options :: struct {
 	writers:   int `args:"name=w" usage:"number of file workers"`,
 	times:     int `args:"name=t" usage:"number of times to overwrite each file"`,
 	delete:    bool `args:"name=d" usage:"delete files/dirs"`,
+	verbose:   bool `args:"name=v" usage:"enable log messages"`,
 }
 
 File :: struct {
@@ -32,6 +33,7 @@ State :: struct {
 	explorers:    int,
 	writers:      int,
 	times:        int,
+	verbose:      bool,
 	//
 	wg:           async.Wait_Group,
 }
@@ -41,6 +43,7 @@ main :: proc() {
 		explorers = 1,
 		writers   = 5,
 		times     = 3,
+		verbose   = false,
 	}
 	flags.parse_or_exit(&opts, os.args, .Odin)
 
@@ -57,6 +60,7 @@ main :: proc() {
 		explorers = opts.explorers,
 		writers   = opts.writers,
 		times     = opts.times,
+		verbose   = opts.verbose,
 		wg        = async.create_wait_group(),
 	}
 
@@ -86,8 +90,8 @@ main :: proc() {
 }
 
 submain :: proc(state: ^State) {
-	fmt.println("[submain] init")
-	defer fmt.println("[submain] deinit")
+	if state.verbose do fmt.println("[submain] init")
+	defer if state.verbose do fmt.println("[submain] deinit")
 
 	handles := make([dynamic]async.Handle)
 	defer delete(handles)
@@ -111,13 +115,13 @@ submain :: proc(state: ^State) {
 }
 
 broker :: proc(state: ^State) {
-	fmt.println("[broker] init")
-	defer fmt.println("[broker] deinit")
+	if state.verbose do fmt.println("[broker] init")
+	defer if state.verbose do fmt.println("[broker] deinit")
 
 	for path in async.recv(state.path_ch) {
 		defer async.done(state.wg)
 
-		fmt.printfln("[broker] < %v", path)
+		if state.verbose do fmt.printfln("[broker] < %v", path)
 		file := io.open(path, {.Write}) or_continue
 
 		type, _, stat_err := io.stat(file)
@@ -142,8 +146,8 @@ broker :: proc(state: ^State) {
 }
 
 explorer :: proc(state: ^State) {
-	fmt.println("[explorer] init")
-	defer fmt.println("[explorer] deinit")
+	if state.verbose do fmt.println("[explorer] init")
+	defer if state.verbose do fmt.println("[explorer] deinit")
 
 	for dir_path in async.recv(state.dir_ch) {
 		defer {
@@ -151,7 +155,7 @@ explorer :: proc(state: ^State) {
 			queue_delete(state, dir_path)
 		}
 
-		fmt.printfln("[explorer] < %v", dir_path)
+		if state.verbose do fmt.printfln("[explorer] < %v", dir_path)
 		it := io.create_read_dir(dir_path) or_continue
 		defer io.destroy_read_dir(&it)
 
@@ -170,8 +174,8 @@ explorer :: proc(state: ^State) {
 }
 
 writer :: proc(state: ^State) {
-	fmt.println("[writer] init")
-	defer fmt.println("[writer] deinit")
+	if state.verbose do fmt.println("[writer] init")
+	defer if state.verbose do fmt.println("[writer] deinit")
 
 	for file in async.recv(state.file_ch) {
 		defer {
@@ -180,7 +184,7 @@ writer :: proc(state: ^State) {
 			queue_delete(state, file.path)
 		}
 
-		fmt.println("[writer] <")
+		if state.verbose do fmt.println("[writer] <")
 		_, size := io.stat(file.handle) or_continue
 		for i in 0 ..< state.times do overwrite(file.handle, int(size)) or_break
 	}
@@ -201,11 +205,11 @@ overwrite :: proc(file: io.Handle, size: int) -> bool {
 }
 
 janitor :: proc(state: ^State) {
-	fmt.println("[janitor] init")
-	defer fmt.println("[janitor] deinit")
+	if state.verbose do fmt.println("[janitor] init")
+	defer if state.verbose do fmt.println("[janitor] deinit")
 
 	for path in state.delete_paths {
-		fmt.printfln("[janitor] < %v", path)
+		if state.verbose do fmt.printfln("[janitor] < %v", path)
 		_ = os.remove_all(path)
 		delete(path)
 	}
